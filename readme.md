@@ -8,5 +8,6 @@ Features in schedule:
 - Task cancelling
 - Priority based scheduling
 - Multithreaded downloading
+- Backpressure control
 
 ### Currently under construction.
