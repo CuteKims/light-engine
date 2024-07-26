@@ -4,10 +4,10 @@ Features in schedule:
 ---
 - Speed & progress calculation
 - Remaining time estimation
-- Configurable concurrent number
-- Download speed limitation
+- Mutable concurrency level & speed limitation
 - Task cancelling
 - Priority based scheduling
 - Multithreaded downloading
+- Backpressure control
 
 ### Currently under construction.
