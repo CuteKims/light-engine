@@ -1,67 +1,52 @@
-use bytes::BufMut;
+use bytes::{BufMut, Bytes, BytesMut};
+use futures::FutureExt;
 use reqwest::header;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::limiter::DownloadLimiter;
 
-struct HttpGetRequest {
-    url: String,
-    header: header::HeaderMap<header::HeaderValue>,
-    bytes: bytes::BytesMut,
+pub struct HttpGetRequest {
+    pub url: String,
+    pub headers: header::HeaderMap<header::HeaderValue>,
+    pub size: usize,
 }
 
 // type HttpGetResult = Result<(), Box<dyn std::error::Error>>;
 
+#[derive(Clone)]
 pub struct HttpRequester {
-    rt: tokio::runtime::Runtime,
+    rt_handle: tokio::runtime::Handle,
     client: reqwest::Client,
     limiter: DownloadLimiter
 }
 
 impl HttpRequester {
-    pub fn new(worker_threads: usize, limiter: DownloadLimiter) -> Result<HttpRequester, Box<dyn std::error::Error>> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .thread_name("http-requester")
-            .build()?;
-        let client = reqwest::Client::new();
+    pub fn new(rt_handle: tokio::runtime::Handle, limiter: DownloadLimiter, client: reqwest::Client) -> Result<HttpRequester, Box<dyn std::error::Error>> {
         let requester = HttpRequester {
-            rt,
+            rt_handle,
             client,
             limiter
         };
         Ok(requester)
     }
-    pub fn handle(&self) -> HttpRequesterHandle {
-        HttpRequesterHandle {
-            rt_handle: self.rt.handle().clone(),
-            client: self.client.clone(),
-            limiter: self.limiter.clone()
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct HttpRequesterHandle {
-    rt_handle: tokio::runtime::Handle,
-    client: reqwest::Client,
-    limiter: DownloadLimiter,
-}
-
-impl HttpRequesterHandle {
-    async fn dispatch(&self, mut request: HttpGetRequest) -> () {
+    pub async fn dispatch(&self, mut request: HttpGetRequest) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
+        println!("Receieved HttpGetRequest");
         let client = self.client.clone();
         let limiter = self.limiter.clone();
-        let i: Result<(), tokio::task::JoinError> = self.rt_handle.spawn(async move {
-            let _permit = limiter.acquire(request.bytes.capacity()).await;
-            let resp = client
+        let i: Result<Result<Bytes, Box<dyn std::error::Error + Send + Sync>>, tokio::task::JoinError> = self.rt_handle.spawn(async move {
+            println!("Fetching block, range: {}", request.headers.clone().get("Range").unwrap().to_str().unwrap());
+            let mut resp = client
                 .get(request.url)
-                .headers(request.header)
+                .headers(request.headers)
                 .send()
-                .await.unwrap()
-                .bytes()
-                .await.unwrap();
-            request.bytes.put(resp);
+                .await?;
+            let mut bytes = BytesMut::new();
+            while let Some(chunk) = resp.chunk().await? {
+                let _permit = limiter.consume(chunk.len()).then(|()| async {
+                    bytes.put(chunk);
+                }).await;
+            }
+            Ok(bytes.freeze())
         }).await;
         i.unwrap()
     }

@@ -41,9 +41,6 @@ impl DownloadEngine {
             limiter
         }
     }
-    pub async fn set_max_concurrency(&self, val: usize) {
-        self.limiter.set_max_concurrency(val).await;
-    }
     pub async fn set_max_speed(&self, val: usize) {
         self.limiter.set_max_speed(val).await;
     }

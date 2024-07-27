@@ -72,7 +72,6 @@ impl SharedRateLimiter {
 
 #[derive(Clone)]
 pub struct DownloadLimiter {
-    concurrency_limiter: Arc<Semaphore>,
     rate_limiter: SharedRateLimiter,
 }
 
@@ -81,22 +80,13 @@ pub type DownloadPermit = ();
 impl DownloadLimiter {
     pub fn new(max_concurrency: usize, max_speed: usize) -> Self {
         DownloadLimiter {
-            concurrency_limiter: Arc::new(Semaphore::new(max_concurrency)),
             rate_limiter: SharedRateLimiter::new(max_speed as u64, max_speed as u64),
         }
     }
-    pub async fn acquire(&self, package_size: usize) -> DownloadPermit {
-        let _ = self.concurrency_limiter.acquire().await.unwrap();
+    pub async fn consume(&self, package_size: usize) -> DownloadPermit {
         let _ = self.rate_limiter.consume(package_size as u64).await;
         ()
     }
-    pub async fn set_max_concurrency(&self, val: usize) {
-        let available_permits = self.concurrency_limiter.available_permits();
-        if available_permits == val { return }
-        if available_permits < val { self.concurrency_limiter.add_permits( val - available_permits ); }
-        else { self.concurrency_limiter.forget_permits( available_permits - val ); }
-    }
-
     pub async fn set_max_speed(&self, val: usize) {
         self.rate_limiter.set_capacity(val as u64).await;
         self.rate_limiter.set_rate(val as u64).await;
