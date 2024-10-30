@@ -1,30 +1,26 @@
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{fs::File, path::Path, sync::Arc, thread, time::Duration};
 
-use engine::{download_manager::{self, DownloadRequest}, http_requester, task_manager::Priority};
-use tokio::{runtime, time::sleep};
+use engine::DownloadRequest;
+use tokio::runtime;
 
-mod limiter;
 mod engine;
+mod manager;
+mod task;
 
 fn main() {
-    let rt = runtime::Builder::new_multi_thread()
-        .enable_time()
-        .enable_io()
-        .worker_threads(1)
-        .build()
-        .unwrap();
-    let client = reqwest::Client::new();
-    let limiter = limiter::DownloadLimiter::new(2, 1 * 1024 * 1024);
-    let http_requester = http_requester::HttpRequester::new(rt.handle().clone(), limiter, client.clone()).unwrap();
-    let download_manager = download_manager::DownloadManager::new(rt.handle().clone(), http_requester, client.clone());
-    let request = DownloadRequest {
-        url: "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.12_240708_x64_01.exe".to_string(),
-        path: PathBuf::from_str(r"E:\QQ_9.9.12_240708_x64_01.exe").unwrap(),
-        sha1: None,
-        priority: Priority::High
-    };
-    rt.block_on(async move {
-        download_manager.dispatch(request).await;
-        sleep(Duration::from_secs(120)).await;
-    });
+    let file = File::create(Path::new("C:\\Users\\20475\\Documents\\Playground\\file")).unwrap();
+    let url = "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.16_241023_x64_01.exe".to_string();
+
+    let rt = Arc::new(runtime::Builder::new_current_thread().build().unwrap());
+
+    let engine = engine::Builder::new().runtime(rt).build();
+    let _task_id = engine.send_request(
+        vec![
+            DownloadRequest::new(file, url)
+        ]
+    );
+    while true {
+        thread::sleep(Duration::from_secs(1));
+        println!("{:#?}", engine.poll_state_all());
+    }
 }

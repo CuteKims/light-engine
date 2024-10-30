@@ -1,51 +1,111 @@
-pub mod task_manager;
-pub mod download_manager;
-pub mod http_requester;
+use std::{collections::HashMap, fs::File, sync::Arc};
 
-use tokio::{runtime, sync::mpsc};
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
+use reqwest::Client;
+use tokio::runtime::{self, Runtime};
+use uuid::Uuid;
 
-use crate::limiter::DownloadLimiter;
-use reqwest::header::{self, HeaderValue};
+use crate::{manager::TaskManager, task::{DownloadTask, TaskState}};
 
 pub struct Builder {
-    worker_threads: Option<usize>,
-    max_speed: Option<usize>,
-    max_concurrency: Option<usize>
+    client: Option<Client>,
+    rt: Option<Arc<Runtime>>,
+    quota: Option<Quota>
 }
 
 impl Builder {
-    pub fn new() -> Builder {
-        Builder { worker_threads: None, max_speed: None, max_concurrency: None }
+    pub fn new() -> Self {
+        return Builder {
+            client: None,
+            rt: None,
+            quota: None,
+        }
     }
-    pub fn worker_threads(&self, val: usize) -> Builder {
-        Builder { worker_threads: Some(val), max_speed: self.max_speed, max_concurrency: self.max_concurrency }
+
+    pub fn client(self, client: Client) -> Self {
+        Builder {
+            client: Some(client),
+            rt: self.rt,
+            quota: self.quota
+        }
     }
-    pub fn max_speed(&self, val: usize) -> Builder {
-        Builder { worker_threads: self.worker_threads, max_speed: Some(val), max_concurrency: self.max_concurrency }
+
+    pub fn runtime(self, rt: Arc<Runtime>) -> Self {
+        Builder {
+            client: self.client,
+            rt: Some(rt),
+            quota: self.quota
+        }
     }
-    pub fn max_concurrency(&self, val: usize) -> Builder {
-        Builder { worker_threads: self.worker_threads, max_speed: self.max_speed, max_concurrency: Some(val) }
+
+    pub fn quota(self, quota: Quota) -> Self {
+        Builder {
+            client: self.client,
+            rt: self.rt,
+            quota: Some(quota)
+        }
     }
-    pub fn build() -> Result<DownloadEngine, Box<dyn std::error::Error>> {
-        Ok(DownloadEngine::new(DownloadLimiter::new(10, 1024)))
+
+    pub fn build(self) -> DownloadEngine {
+        let client = self.client.unwrap_or_else(|| {
+            Client::builder().build().unwrap()
+        });
+        let rt = self.rt.unwrap_or_else(|| {
+            let rt = runtime::Builder::new_current_thread().thread_name("light-engine-worker-thread").enable_all().build().unwrap();
+            Arc::new(rt)
+        });
+        let rate_limiter = match self.quota {
+            Some(quota) => Some(Arc::new(RateLimiter::direct(quota))),
+            None => None,
+        };
+        let task_manager = TaskManager::new();
+        DownloadEngine {
+            client,
+            rt,
+            rate_limiter,
+            task_manager,
+        }
     }
 }
 
 pub struct DownloadEngine {
-    limiter: DownloadLimiter
+    client: Client,
+    rt: Arc<Runtime>,
+    rate_limiter: Option<Arc<DefaultDirectRateLimiter>>,
+    task_manager: TaskManager,
 }
 
 impl DownloadEngine {
-    fn new(limiter: DownloadLimiter) -> DownloadEngine {
-        return DownloadEngine {
-            limiter
-        }
+    pub fn send_request(&self, request: Vec<DownloadRequest>) -> Vec<Uuid> {
+        self.task_manager.dispatch(request.into_iter().map(|request| {
+            request.into_task(self.task_manager.clone(), self.rt.clone(), self.client.clone(), self.rate_limiter.clone())
+        }).collect())
     }
-    pub async fn set_max_speed(&self, val: usize) {
-        self.limiter.set_max_speed(val).await;
+    pub fn poll_state(&self, task_id: Vec<Uuid>) -> HashMap<Uuid, TaskState> {
+        self.task_manager.poll_state(task_id)
     }
-    pub fn run() {
+    pub fn poll_state_all(&self) -> HashMap<Uuid, TaskState> {
+        self.task_manager.poll_state_all()
+    }
+}
 
-        
+pub struct DownloadRequest {
+    pub file: File,
+    pub url: String,
+}
+
+impl DownloadRequest {
+    pub fn new(file: File, url: String) -> Self {
+        return DownloadRequest { file, url }
+    }
+
+    pub fn into_task(self, task_manager: TaskManager, rt: Arc<Runtime>, client: Client, rate_limiter: Option<Arc<DefaultDirectRateLimiter>>) -> DownloadTask {
+        return DownloadTask {
+            request: self,
+            task_manager,
+            rt,
+            client,
+            rate_limiter,
+        }
     }
 }
