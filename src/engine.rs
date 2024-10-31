@@ -68,6 +68,7 @@ impl Builder {
     }
 }
 
+#[derive(Clone)]
 pub struct DownloadEngine {
     client: Client,
     rt: Arc<Runtime>,

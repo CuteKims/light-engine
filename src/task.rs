@@ -55,6 +55,7 @@ impl DownloadTask {
                 streamed += chunk.len();
                 self.task_manager.report_state(task_id, TaskState::Downloading { total: content_length, streamed });
             }
+            self.task_manager.report_state(task_id, TaskState::Finishing);
             self.request.file.sync_data();
             self.task_manager.report_state(task_id, TaskState::Finished);
         });
@@ -68,6 +69,7 @@ pub enum TaskState {
         total: Option<usize>,
         streamed: usize,
     },
+    Finishing,
     Finished,
     Failed
 }

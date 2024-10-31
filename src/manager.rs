@@ -36,9 +36,9 @@ impl TaskManager {
                             );
                         });
                     },
-                    TaskManagerCommand::Report { task_id, new_state } => {
+                    TaskManagerCommand::Report { task_id, latest_state } => {
                         if let Some(_progress) = states.get_mut(&task_id) {
-                            *_progress = new_state
+                            *_progress = latest_state
                         }
                     },
                     TaskManagerCommand::Close => {
@@ -81,8 +81,8 @@ impl TaskManager {
         result
     }
 
-    pub fn report_state(&self, task_id: Uuid, new_state: TaskState) {
-        self.command_tx.send(TaskManagerCommand::Report { task_id, new_state }).unwrap();
+    pub fn report_state(&self, task_id: Uuid, latest_state: TaskState) {
+        self.command_tx.send(TaskManagerCommand::Report { task_id, latest_state }).unwrap();
     }
 }
 
@@ -99,7 +99,7 @@ enum TaskManagerCommand {
     },
     Report {
         task_id: Uuid,
-        new_state: TaskState
+        latest_state: TaskState
     },
     Close
 }

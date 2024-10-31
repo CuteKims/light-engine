@@ -16,19 +16,30 @@ fn main() {
     let rt = Arc::new(runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap());
 
     let engine = engine::Builder::new().runtime(rt.clone()).build();
-    let _task_id = engine.send_request(
-        vec![
-            DownloadRequest::new(file1, url.clone()),
-            DownloadRequest::new(file2, url.clone()),
-            DownloadRequest::new(file3, url.clone())
-        ]
-    );
+
+    let _engine = engine.clone();
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5000));
+
+        engine.send_request(vec![DownloadRequest::new(file1, url.clone())]);
+    
+        thread::sleep(Duration::from_millis(5000));
+    
+        engine.send_request(vec![DownloadRequest::new(file2, url.clone())]);
+    
+        thread::sleep(Duration::from_millis(5000));
+    
+        engine.send_request(vec![DownloadRequest::new(file3, url.clone())]);
+    });
+
     while true {
         thread::sleep(Duration::from_millis(1000));
-        println!("{:#?}", engine.poll_state_all().iter().map(|(task_id, state)| {
+        println!("{:#?}", _engine.poll_state_all().iter().map(|(task_id, state)| {
             format!("{:?}: {}", task_id, match state {
                 task::TaskState::Pending => "Pending".to_string(),
                 task::TaskState::Downloading { total, streamed } => format!("{}% {}/{}", streamed.clone() as f32 / total.unwrap() as f32 * 100 as f32, streamed, total.unwrap()),
+                task::TaskState::Finishing => "Finishing".to_string(),
                 task::TaskState::Finished => "Finished".to_string(),
                 task::TaskState::Failed => "Failed".to_string(),
             })
