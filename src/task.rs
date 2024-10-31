@@ -28,7 +28,6 @@ impl DownloadTask {
 
     pub fn exec(mut self, task_id: Uuid) {
         self.rt.spawn(async move {
-            println!("Task spawned");
             let head_resp = self.client
                 .head(self.request.url.clone())
                 .send()
@@ -56,6 +55,8 @@ impl DownloadTask {
                 streamed += chunk.len();
                 self.task_manager.report_state(task_id, TaskState::Downloading { total: content_length, streamed });
             }
+            self.request.file.sync_data();
+            self.task_manager.report_state(task_id, TaskState::Finished);
         });
     }
 }

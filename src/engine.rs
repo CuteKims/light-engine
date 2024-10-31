@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, sync::Arc};
+use std::{collections::HashMap, fs::File, sync::Arc, thread};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use reqwest::Client;
@@ -86,6 +86,12 @@ impl DownloadEngine {
     }
     pub fn poll_state_all(&self) -> HashMap<Uuid, TaskState> {
         self.task_manager.poll_state_all()
+    }
+    pub async fn send_request_async(&self, request: Vec<DownloadRequest>) {
+        let task_id = self.task_manager.dispatch(request.into_iter().map(|request| {
+            request.into_task(self.task_manager.clone(), self.rt.clone(), self.client.clone(), self.rate_limiter.clone())
+        }).collect());
+
     }
 }
 
