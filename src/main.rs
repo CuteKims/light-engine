@@ -1,6 +1,7 @@
-use std::{fs::File, path::Path, sync::Arc, thread, time::Duration};
+use std::{fs::File, num::NonZeroU32, path::Path, sync::Arc, thread, time::Duration};
 
 use engine::DownloadRequest;
+use governor::Quota;
 use tokio::runtime;
 
 mod engine;
@@ -8,14 +9,12 @@ mod manager;
 mod task;
 
 fn main() {
-    let file1 = File::create(Path::new("C:\\Users\\20475\\Documents\\Playground\\file1.exe")).unwrap();
-    let file2 = File::create(Path::new("C:\\Users\\20475\\Documents\\Playground\\file2.exe")).unwrap();
-    let file3 = File::create(Path::new("C:\\Users\\20475\\Documents\\Playground\\file3.exe")).unwrap();
+    let file1 = File::create(Path::new("C:\\__Playground_created_by_CuteKims_for_testing\\file1.exe")).unwrap();
+    let file2 = File::create(Path::new("C:\\__Playground_created_by_CuteKims_for_testing\\file2.exe")).unwrap();
+    let file3 = File::create(Path::new("C:\\__Playground_created_by_CuteKims_for_testing\\file3.exe")).unwrap();
     let url = "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.16_241023_x64_01.exe".to_string();
 
-    let rt = Arc::new(runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap());
-
-    let engine = engine::Builder::new().runtime(rt.clone()).build();
+    let engine = engine::Builder::new().build();
 
     let _engine = engine.clone();
 

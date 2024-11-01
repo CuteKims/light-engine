@@ -1,8 +1,9 @@
-use std::{io::Write, sync::Arc};
+use std::{io::Write, num::NonZeroU32, sync::Arc};
 
+use futures::FutureExt;
 use governor::DefaultDirectRateLimiter;
 use reqwest::{header, Client};
-use tokio::runtime::{self, Runtime};
+use tokio::{runtime::Runtime, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::{engine::DownloadRequest, manager::TaskManager};
@@ -12,22 +13,11 @@ pub struct DownloadTask {
     pub task_manager: TaskManager,
     pub rt: Arc<Runtime>,
     pub client: Client,
-    pub rate_limiter: Option<Arc<DefaultDirectRateLimiter>>,
 }
 
 impl DownloadTask {
-    pub fn new(request: DownloadRequest, task_manager: TaskManager, rt: Arc<Runtime>, client: Client, rate_limiter: Option<Arc<DefaultDirectRateLimiter>>) -> Self {
-        return DownloadTask {
-            request,
-            task_manager,
-            rt,
-            client,
-            rate_limiter
-        }
-    }
-
-    pub fn exec(mut self, task_id: Uuid) {
-        self.rt.spawn(async move {
+    pub fn exec(mut self, task_id: Uuid) -> JoinHandle<()>{
+        let jh = self.rt.spawn(async move {
             let head_resp = self.client
                 .head(self.request.url.clone())
                 .send()
@@ -56,9 +46,10 @@ impl DownloadTask {
                 self.task_manager.report_state(task_id, TaskState::Downloading { total: content_length, streamed });
             }
             self.task_manager.report_state(task_id, TaskState::Finishing);
-            self.request.file.sync_data();
+            self.request.file.sync_data().unwrap();
             self.task_manager.report_state(task_id, TaskState::Finished);
         });
+        jh
     }
 }
 
