@@ -1,16 +1,14 @@
-use std::{collections::HashMap, fs::File, sync::Arc, thread::{self, JoinHandle}};
+use std::{collections::HashMap, fs::File, num::NonZeroUsize, sync::Arc};
 
-use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use reqwest::Client;
 use tokio::runtime::{self, Runtime};
 use uuid::Uuid;
 
-use crate::{manager::TaskManager, task::{DownloadTask, TaskState}};
+use crate::{manager::TaskManager, task::{DownloadTask, TaskStatus}, watcher::{Quota, Watcher}};
 
 pub struct Builder {
     client: Option<Client>,
-    worker_threads: Option<usize>,
-    quota: Option<Quota>
+    worker_threads: Option<usize>
 }
 
 impl Builder {
@@ -18,7 +16,6 @@ impl Builder {
         return Builder {
             client: None,
             worker_threads: None,
-            quota: None,
         }
     }
 
@@ -26,7 +23,6 @@ impl Builder {
         Builder {
             client: Some(client),
             worker_threads: self.worker_threads,
-            quota: self.quota
         }
     }
 
@@ -34,7 +30,6 @@ impl Builder {
         Builder {
             client: self.client,
             worker_threads: Some(val),
-            quota: self.quota
         }
     }
 
@@ -50,10 +45,12 @@ impl Builder {
             .unwrap()
         );
         let task_manager = TaskManager::new();
+        let watcher = Watcher::new(Quota::bytes_per_second(NonZeroUsize::new(2048 * 1024).unwrap()));
         DownloadEngine {
             client,
             rt,
             task_manager,
+            watcher
         }
     }
 }
@@ -63,25 +60,22 @@ pub struct DownloadEngine {
     client: Client,
     rt: Arc<Runtime>,
     task_manager: TaskManager,
+    watcher: Watcher,
 }
 
 impl DownloadEngine {
-    pub fn send_request(&self, request: Vec<DownloadRequest>) -> Vec<Uuid> {
-        self.task_manager.dispatch(request.into_iter().map(|request| {
-            request.into_task(self.task_manager.clone(), self.rt.clone(), self.client.clone())
+    // DownloadRequest在这里获取上下文并封装成为DownloadTask。
+    pub fn send_request(&self, requests: Vec<DownloadRequest>) -> Vec<Uuid> {
+        self.task_manager.dispatch(requests.into_iter().map(|request| {
+            request.into_task(self.task_manager.clone(), self.watcher.clone(), self.rt.clone(), self.client.clone())
         }).collect())
     }
-    pub fn poll_state(&self, task_id: Vec<Uuid>) -> Vec<TaskState> {
-        self.task_manager.poll_state(task_id)
+    pub fn poll_status(&self, task_id: Vec<Uuid>) -> Vec<TaskStatus> {
+        self.task_manager.poll_status(task_id)
     }
-    pub fn poll_state_all(&self) -> HashMap<Uuid, TaskState> {
-        self.task_manager.poll_state_all()
+    pub fn poll_status_all(&self) -> HashMap<Uuid, TaskStatus> {
+        self.task_manager.poll_status_all()
     }
-    // pub fn send_request_async(&self, request: Vec<DownloadRequest>) -> JoinHandle<()>{
-    //     let task_id = self.task_manager.dispatch(request.into_iter().map(|request| {
-    //         request.into_task(self.task_manager.clone(), self.rt.clone(), self.client.clone(), self.rate_limiter.clone())
-    //     }).collect());
-    // }
 }
 
 pub struct DownloadRequest {
@@ -94,10 +88,11 @@ impl DownloadRequest {
         return DownloadRequest { file, url }
     }
 
-    pub fn into_task(self, task_manager: TaskManager, rt: Arc<Runtime>, client: Client) -> DownloadTask {
+    pub fn into_task(self, task_manager: TaskManager, watcher: Watcher, rt: Arc<Runtime>, client: Client) -> DownloadTask {
         return DownloadTask {
             request: self,
             task_manager,
+            watcher,
             rt,
             client,
         }

@@ -1,12 +1,12 @@
-use std::{fs::File, num::NonZeroU32, path::Path, sync::Arc, thread, time::Duration};
+use std::{fs::File, path::Path, thread, time::Duration};
 
 use engine::DownloadRequest;
-use governor::Quota;
-use tokio::runtime;
+
 
 mod engine;
 mod manager;
 mod task;
+mod watcher;
 
 fn main() {
     let file1 = File::create(Path::new("C:\\__Playground_created_by_CuteKims_for_testing\\file1.exe")).unwrap();
@@ -33,14 +33,15 @@ fn main() {
     });
 
     while true {
+        // 循环获取任务状态并格式化打印。
         thread::sleep(Duration::from_millis(1000));
-        println!("{:#?}", _engine.poll_state_all().iter().map(|(task_id, state)| {
+        println!("{:#?}", _engine.poll_status_all().iter().map(|(task_id, state)| {
             format!("{:?}: {}", task_id, match state {
-                task::TaskState::Pending => "Pending".to_string(),
-                task::TaskState::Downloading { total, streamed } => format!("{}% {}/{}", streamed.clone() as f32 / total.unwrap() as f32 * 100 as f32, streamed, total.unwrap()),
-                task::TaskState::Finishing => "Finishing".to_string(),
-                task::TaskState::Finished => "Finished".to_string(),
-                task::TaskState::Failed => "Failed".to_string(),
+                task::TaskStatus::Pending => "Pending".to_string(),
+                task::TaskStatus::Downloading { total, streamed } => format!("{}% {}/{}", streamed.clone() as f32 / total.unwrap() as f32 * 100 as f32, streamed, total.unwrap()),
+                task::TaskStatus::Finishing => "Finishing".to_string(),
+                task::TaskStatus::Finished => "Finished".to_string(),
+                task::TaskStatus::Failed => "Failed".to_string(),
             })
         }).collect::<Vec<String>>());
     }

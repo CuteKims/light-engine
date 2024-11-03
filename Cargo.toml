@@ -8,8 +8,6 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.41.0", features = ["full"] }
 reqwest = { version = "0.12.9", features = ["json"] }
-error-chain = "0.12.4"
-bytes = "1.8.0"
 futures = "0.3.31"
-governor = "0.7.0"
 uuid = { version = "1.11.0", features = ["v4"] }
+thiserror = "1.0.66"
