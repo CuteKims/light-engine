@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::mpsc, thread};
 use tokio::{task, sync::oneshot};
 use uuid::Uuid;
 
-use crate::task::{DownloadTask, TaskStatus};
+use crate::{engine::TaskStatus, task::DownloadTask};
 
 #[derive(Clone)]
 pub struct TaskManager {

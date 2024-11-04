@@ -4,7 +4,7 @@ use reqwest::Client;
 use tokio::runtime::{self, Runtime};
 use uuid::Uuid;
 
-use crate::{manager::TaskManager, task::{DownloadTask, TaskStatus}, watcher::{Quota, Watcher}};
+use crate::{manager::TaskManager, task::DownloadTask, watcher::{Quota, Watcher}};
 
 pub struct Builder {
     client: Option<Client>,
@@ -97,4 +97,16 @@ impl DownloadRequest {
             client,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskStatus {
+    Pending,
+    Downloading {
+        total: Option<usize>,
+        streamed: usize,
+    },
+    Finishing,
+    Finished,
+    Failed
 }

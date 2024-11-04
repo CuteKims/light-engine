@@ -4,7 +4,7 @@ use reqwest::{header, Client};
 use tokio::{runtime::Runtime, task};
 use uuid::Uuid;
 
-use crate::{engine::DownloadRequest, manager::TaskManager, watcher::Watcher};
+use crate::{engine::{DownloadRequest, TaskStatus}, manager::TaskManager, watcher::Watcher};
 
 // 包含了全部下载逻辑的下载任务结构体。拥有执行任务需要的所有上下文。
 pub struct DownloadTask {
@@ -59,16 +59,4 @@ impl DownloadTask {
         });
         jh
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum TaskStatus {
-    Pending,
-    Downloading {
-        total: Option<usize>,
-        streamed: usize,
-    },
-    Finishing,
-    Finished,
-    Failed
 }
