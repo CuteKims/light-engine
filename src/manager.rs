@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::mpsc, thread};
 
-use tokio::{task, sync::oneshot};
-use uuid::Uuid;
+use tokio::{sync::oneshot, task::Id};
 
-use crate::{engine::TaskStatus, task::DownloadTask};
+use crate::engine::{TaskStatus, TaskStatusType};
 
 #[derive(Clone)]
 pub struct TaskManager {
@@ -16,29 +15,37 @@ impl TaskManager {
         // 使用单独的线程来管理任务状态，防止因Worker线程忙而导致API阻塞。
         // 你觉得没必要？我不要你觉得，我要我觉得。
         thread::Builder::new().name("light-engine-manager-thread".to_string()).spawn(move || {
-            let mut states: HashMap<Uuid, TaskStatus> = HashMap::new();
+            let mut statuses: HashMap<Id, TaskStatus> = HashMap::new();
             for received in command_rx {
                 match received {
-                    TaskManagerAction::PollStateAll { poll_result_tx } => {
-                        poll_result_tx.send(states.clone()).unwrap();
+                    TaskManagerAction::PollStatus { task_id, poll_result_tx } => {
+                        let status = statuses
+                            .get(&task_id)
+                            .map(|status| { status.clone() });
+                        poll_result_tx
+                            .send(status)
+                            .unwrap_or(());
                     },
-                    TaskManagerAction::PollState { task_id, poll_result_tx } => {
-                        let polled_states = task_id.into_iter().map(|task_id| {
-                            states.get(&task_id).unwrap().clone()
+                    TaskManagerAction::PollStatuses { task_ids, poll_result_tx } => {
+                        let polled_states = task_ids.into_iter().map(|task_id| {
+                            statuses.get(&task_id).map(|status| { status.clone() })
                         }).collect();
                         poll_result_tx.send(polled_states).unwrap();
                     },
-                    TaskManagerAction::Dispatch { task_id } => {
-                        task_id.into_iter().for_each(|task_id| {
-                            states.insert(
+                    TaskManagerAction::NewTask { task_id } => {
+                        statuses.insert(task_id, TaskStatus {retries: 0, status_type: TaskStatusType::Pending});
+                    }
+                    TaskManagerAction::NewTasks { task_ids } => {
+                        task_ids.into_iter().for_each(|task_id| {
+                            statuses.insert(
                                 task_id.clone(),
-                                TaskStatus::Pending
+                                TaskStatus {retries: 0, status_type: TaskStatusType::Pending}
                             );
                         });
                     },
-                    TaskManagerAction::Report { task_id, latest_state } => {
-                        if let Some(state) = states.get_mut(&task_id) {
-                            *state = latest_state
+                    TaskManagerAction::Report { task_id, status: new_status } => {
+                        if let Some(_status) = statuses.get_mut(&task_id) {
+                            *_status = new_status
                         }
                     },
                     TaskManagerAction::Close => {
@@ -53,54 +60,56 @@ impl TaskManager {
         }
     }
 
-    // DownloadTask在这里被赋予task_id并启动执行任务。
-    // 有点傻逼对吧，我看这逻辑也不顺眼，但是我也不知道得怎么改。
-    // 现在觉得task_id其实没必要，只要send_request()能够返回一个可以追踪任务的结构体就可以了。
-    pub fn dispatch(&self, tasks: Vec<DownloadTask>) -> Vec<Uuid> {
-        let mut task_ids: Vec<Uuid> = Vec::new();
-        let mut jh: Vec<task::JoinHandle<()>> = Vec::new();
-        tasks.into_iter().for_each(|task| {
-            let uuid = Uuid::new_v4();
-            task_ids.push(uuid);
-            jh.push(task.exec(uuid));
-        });
-        self.command_tx.send(TaskManagerAction::Dispatch { task_id: task_ids.clone() }).unwrap();
-        task_ids
+    pub fn new_task(&self, task_id: Id) {
+        self.command_tx.send(TaskManagerAction::NewTask { task_id: task_id.clone() }).unwrap();
+    }
+    pub fn new_tasks(&self, task_ids: Vec<Id>) {
+        self.command_tx.send(TaskManagerAction::NewTasks { task_ids: task_ids.clone() }).unwrap();
     }
 
-    pub fn poll_status(&self, task_id: Vec<Uuid>) -> Vec<TaskStatus> {
-        let (poll_result_tx, poll_result_rx) = oneshot::channel::<Vec<TaskStatus>>();
-        self.command_tx.send(TaskManagerAction::PollState { task_id, poll_result_tx }).unwrap();
+    pub fn poll_status(&self, task_id: Id) -> Option<TaskStatus> {
+        let (poll_result_tx, poll_result_rx) = oneshot::channel::<Option<TaskStatus>>();
+        self.command_tx.send(TaskManagerAction::PollStatus { task_id, poll_result_tx }).unwrap();
         let result = poll_result_rx.blocking_recv().unwrap();
         result
     }
 
-    pub fn poll_status_all(&self) -> HashMap<Uuid, TaskStatus> {
-        let (poll_result_tx, poll_result_rx) = oneshot::channel::<HashMap<Uuid, TaskStatus>>();
-        self.command_tx.send(TaskManagerAction::PollStateAll { poll_result_tx }).unwrap();
+    pub fn poll_statuses(&self, task_ids: Vec<Id>) -> Vec<Option<TaskStatus>> {
+        let (poll_result_tx, poll_result_rx) = oneshot::channel::<Vec<Option<TaskStatus>>>();
+        self.command_tx.send(TaskManagerAction::PollStatuses { task_ids, poll_result_tx }).unwrap();
         let result = poll_result_rx.blocking_recv().unwrap();
         result
     }
 
-    pub fn report_status(&self, task_id: Uuid, latest_state: TaskStatus) {
-        self.command_tx.send(TaskManagerAction::Report { task_id, latest_state }).unwrap();
+    pub fn report_status(&self, task_id: Id, status: TaskStatus) {
+        self.command_tx.send(TaskManagerAction::Report { task_id, status }).unwrap();
+    }
+}
+
+impl Drop for TaskManager {
+    fn drop(&mut self) {
+        self.command_tx.send(TaskManagerAction::Close).unwrap();
     }
 }
 
 enum TaskManagerAction {
-    PollStateAll {
-        poll_result_tx: oneshot::Sender<HashMap<Uuid, TaskStatus>>
+    PollStatus {
+        task_id: Id,
+        poll_result_tx: oneshot::Sender<Option<TaskStatus>>
     },
-    PollState {
-        task_id: Vec<Uuid>,
-        poll_result_tx: oneshot::Sender<Vec<TaskStatus>>
+    PollStatuses {
+        task_ids: Vec<Id>,
+        poll_result_tx: oneshot::Sender<Vec<Option<TaskStatus>>>
     },
-    Dispatch {
-        task_id: Vec<Uuid>
+    NewTask {
+        task_id: Id
+    },
+    NewTasks {
+        task_ids: Vec<Id>
     },
     Report {
-        task_id: Uuid,
-        latest_state: TaskStatus
+        task_id: Id,
+        status: TaskStatus
     },
     Close
 }

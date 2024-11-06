@@ -10,4 +10,4 @@ tokio = { version = "1.41.0", features = ["full"] }
 reqwest = { version = "0.12.9", features = ["json"] }
 futures = "0.3.31"
 uuid = { version = "1.11.0", features = ["v4"] }
-thiserror = "^1.0"
+thiserror = "2.0.0"
