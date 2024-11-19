@@ -1,11 +1,11 @@
-use std::{future::Future, num::NonZeroUsize, path::PathBuf, sync::{atomic::{AtomicBool, Ordering}, Arc}, task::Poll::{self, Ready}};
+use std::{future::Future, path::PathBuf, sync::{atomic::{AtomicBool, Ordering}, Arc}, task::Poll::{self, Ready}};
 
 use futures::FutureExt;
 use reqwest::Client;
-use tokio::{runtime::{self, Runtime}, task::{self, AbortHandle, Id, JoinHandle}};
+use tokio::{runtime::{self, Runtime}, task::{self, Id, JoinHandle}};
 use thiserror::Error;
 
-use crate::{manager::TaskManager, task::{DownloadError, DownloadTask, DownloadTaskResult}, watcher::{Quota, Watcher}};
+use crate::{manager::TaskManager, task::{DownloadError, DownloadTask, DownloadTaskResult}, limiter::{self, Limiter}};
 
 pub struct Builder {
     client: Option<Client>,
@@ -46,12 +46,12 @@ impl Builder {
             .unwrap()
         );
         let task_manager = TaskManager::new();
-        let watcher = Watcher::new(Quota::bytes_per_second(NonZeroUsize::new(2048 * 1024).unwrap()));
+        let limiter = limiter::Builder::new().build();
         DownloadEngine {
             client,
             rt,
             task_manager,
-            watcher
+            limiter
         }
     }
 }
@@ -61,115 +61,226 @@ pub struct DownloadEngine {
     client: Client,
     rt: Arc<Runtime>,
     task_manager: TaskManager,
-    watcher: Watcher,
+    limiter: Limiter,
 }
 
 impl DownloadEngine {
     // DownloadRequest在这里获取上下文并封装成为DownloadTask。
-    pub fn send_request(&self, request: DownloadRequest) -> JobHandle {
+    pub fn send_request(&self, request: DownloadRequest) -> (Id, TaskHandle) {
         let jh: JoinHandle<Result<(), DownloadError>> = request
-            .into_task(self.task_manager.clone(), self.watcher.clone(), self.rt.clone(), self.client.clone())
+            .clone()
+            .into_task(self.task_manager.clone(), self.limiter.clone(), self.rt.clone(), self.client.clone())
             .exec();
         self.task_manager.new_task(jh.id());
-        JobHandle::new(jh)
+        (jh.id(), TaskHandle::new(self.limiter.clone(), self.task_manager.clone(), jh))
     }
 
-    pub fn send_batched_requests<I>(&self, requests: I) -> JobHandle
+    pub fn send_batched_requests<I>(&self, requests: I) -> (Vec<Id>, BatchedTaskHandle)
     where
         I: IntoIterator<Item = DownloadRequest>
     {
-        let mut task_ids: Vec<Id> = Vec::new();
+        let mut tasks: Vec<Id> = Vec::new();
         let mut jhs: Vec<JoinHandle<DownloadTaskResult>> = Vec::new();
         requests.into_iter().for_each(|request| {
             let jh = request
-                .into_task(self.task_manager.clone(), self.watcher.clone(), self.rt.clone(), self.client.clone())
+                .clone()
+                .into_task(self.task_manager.clone(), self.limiter.clone(), self.rt.clone(), self.client.clone())
                 .exec();
-            task_ids.push(jh.id());
+            tasks.push(jh.id());
             jhs.push(jh);
         });
-        JobHandle::new_batched(jhs)
+        self.task_manager.new_tasks(tasks.clone());
+        (tasks, BatchedTaskHandle::new(self.limiter.clone(), self.task_manager.clone(), jhs))
     }
 }
 
-pub struct JobHandle {
-    jh: DownloadTaskJoinHandle,
+pub struct BatchedTaskHandle {
+    limiter: Limiter,
+    task_manager: TaskManager,
+    jhs: Vec<task::JoinHandle<DownloadTaskResult>>,
     aborted: Arc<AtomicBool>
 }
 
-enum DownloadTaskJoinHandle {
-    Signle(task::JoinHandle<DownloadTaskResult>),
-    Batched(Vec<task::JoinHandle<DownloadTaskResult>>)
-}
-
-impl JobHandle {
-    pub fn new(jh: task::JoinHandle<DownloadTaskResult>) -> Self {
-        JobHandle { jh: DownloadTaskJoinHandle::Signle(jh), aborted: Arc::new(AtomicBool::new(false)) }
+impl BatchedTaskHandle {
+    pub fn new(limiter: Limiter, task_manager: TaskManager, jhs: Vec<task::JoinHandle<DownloadTaskResult>>) -> Self {
+        BatchedTaskHandle { limiter, task_manager, jhs, aborted: Arc::new(AtomicBool::new(false)) }
     }
-    pub fn new_batched(jh: Vec<task::JoinHandle<DownloadTaskResult>>) -> Self {
-        JobHandle { jh: DownloadTaskJoinHandle::Batched(jh), aborted: Arc::new(AtomicBool::new(false)) }
-    }
-    pub fn abort_handle(&self) -> JobAbortHandle {
-        match &self.jh {
-            DownloadTaskJoinHandle::Signle(jh) => {
-                JobAbortHandle { aborted: self.aborted.clone(), handle: DownloadTaskAbortHandle::Signle(jh.abort_handle()) }
-            },
-            DownloadTaskJoinHandle::Batched(jhs) => {
-                JobAbortHandle {
-                    aborted: self.aborted.clone(),
-                    handle: DownloadTaskAbortHandle::Batched(jhs.into_iter().map(|jh| {jh.abort_handle()}).collect::<Vec<AbortHandle>>())
+    pub fn debatch_into(self) -> Vec<TaskHandle> {
+        self.jhs
+            .into_iter()
+            .map(|jh| {
+                return TaskHandle {
+                    limiter: self.limiter.clone(),
+                    task_manager: self.task_manager.clone(),
+                    jh,
+                    aborted: self.aborted.clone()
                 }
-            },
+            })
+            .collect()
+    }
+    pub fn abort_handle(&self) -> BatchedAbortHandle {
+        return BatchedAbortHandle {
+            task_manager: self.task_manager.clone(),
+            aborted: self.aborted.clone(),
+            handles: self.jhs.iter().map(|jh| {
+                jh.abort_handle()
+            }).collect()
         }
     }
-    pub fn status_handle(&self) -> JobStatusHandle {
-        JobStatusHandle {  }
+    pub fn status_handle(&self) -> BatchedTaskStatusHandle {
+        return BatchedTaskStatusHandle {
+            limiter: self.limiter.clone(),
+            task_manager: self.task_manager.clone(),
+            task_ids: self.jhs.iter().map(|jh| {
+                jh.id()
+            }).collect(),
+        }
     }
 }
 
-pub struct JobAbortHandle {
+impl Future for BatchedTaskHandle {
+    type Output = Result<(), TaskError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        
+        if self.aborted.load(Ordering::Relaxed) {
+            
+            return Poll::Ready(Err(TaskError::Aborted))
+        }
+
+        let mut polls: Vec<Poll<Result<DownloadTaskResult, task::JoinError>>> = Vec::new();
+
+        for jh in self.jhs.iter_mut() {
+            let poll = jh.poll_unpin(cx);
+            if let Ready(Err(ref join_error)) = poll {
+                if join_error.is_cancelled() { return Poll::Ready(Err(TaskError::Aborted)) }
+                else if join_error.is_panic() { panic!("light-engine worker thread panicked when executing download task id {}", join_error.id()) }
+            }
+            else if let Ready(Ok(Err(error))) = poll {
+                return Poll::Ready(Err(TaskError::Failed { error }))
+            };
+            polls.push(poll);
+        }
+        
+        for poll in polls {
+            match poll {
+                Poll::Pending => return Poll::Pending,
+                _ => continue
+            }
+        };
+        Poll::Ready(Ok(()))
+    }
+}
+
+pub struct TaskHandle {
+    limiter: Limiter,
+    task_manager: TaskManager,
+    jh: task::JoinHandle<DownloadTaskResult>,
+    aborted: Arc<AtomicBool>
+}
+
+impl TaskHandle {
+    pub fn new(limiter: Limiter, task_manager: TaskManager, jh: task::JoinHandle<DownloadTaskResult>) -> Self {
+        TaskHandle { limiter, task_manager, jh, aborted: Arc::new(AtomicBool::new(false)) }
+    }
+    
+    pub fn abort_handle(&self) -> AbortHandle {
+        AbortHandle {
+            task_manager: self.task_manager.clone(),
+            aborted: self.aborted.clone(),
+            handle: self.jh.abort_handle()
+        }
+    }
+    pub fn status_handle(&self) -> TaskStatusHandle {
+        TaskStatusHandle {
+            limiter: self.limiter.clone(),
+            task_manager: self.task_manager.clone(),
+            task_id: self.jh.id()
+        }
+    }
+}
+
+impl Future for TaskHandle {
+    type Output = Result<(), TaskError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        if self.aborted.load(Ordering::Relaxed) { return Poll::Ready(Err(TaskError::Aborted)) }
+        self.jh.poll_unpin(cx).map(|output| {
+            match output {
+                Ok(task_result) => {
+                    match task_result {
+                        Ok(_) => { return Ok(()) }
+                        Err(download_error) => { return Err(TaskError::Failed { error: download_error }) }
+                    }
+                },
+                Err(join_error) => {
+                    if join_error.is_cancelled() { return Err(TaskError::Aborted) }
+                    else if join_error.is_panic() { panic!("light-engine worker thread panicked when executing download task id {}", join_error.id()) }
+                },
+            }
+            Ok(())
+        })
+    }
+}   
+
+pub struct AbortHandle {
+    task_manager: TaskManager,
     aborted: Arc<AtomicBool>,
-    handle: DownloadTaskAbortHandle
+    handle: task::AbortHandle
 }
 
-enum DownloadTaskAbortHandle {
-    Signle(AbortHandle),
-    Batched(Vec<AbortHandle>)
-}
-
-impl JobAbortHandle {
+impl AbortHandle {
     pub fn abort(self) {
         self.aborted.store(true, Ordering::Relaxed);
-        match self.handle {
-            DownloadTaskAbortHandle::Signle(abort_handle) => { abort_handle.abort(); },
-            DownloadTaskAbortHandle::Batched(abort_handles) => {
-                abort_handles.into_iter().for_each(|abort_handle| {
-                    abort_handle.abort();
-                });
-            },
-        }
+        self.handle.abort();
+        self.task_manager.delete_task(self.handle.id());
     }
 }
 
-pub struct JobStatusHandle {
-
+pub struct BatchedAbortHandle {
+    task_manager: TaskManager,
+    aborted: Arc<AtomicBool>,
+    handles: Vec<task::AbortHandle>
 }
 
-impl JobStatusHandle {
-    pub fn poll_status() -> JobStatus {
-        JobStatus { task_statuses: todo!() }
+impl BatchedAbortHandle {
+    pub fn abort(self) {
+        let mut task_ids: Vec<Id> = Vec::new();
+        self.aborted.store(true, Ordering::Relaxed);
+        self.handles.into_iter().for_each(|handle| {
+            task_ids.push(handle.id());
+            handle.abort();
+        });
+        self.task_manager.delete_tasks(task_ids);
     }
 }
 
-pub struct JobStatus {
-    task_statuses: Vec<TaskStatus>
+pub struct TaskStatusHandle {
+    limiter: Limiter,
+    task_manager: TaskManager,
+    task_id: Id
 }
 
-impl JobStatus {
+impl TaskStatusHandle {
+    pub fn poll(&self) -> Option<TaskStatus> {
+        self.task_manager.get_status(self.task_id)
+    }
+}
 
+pub struct BatchedTaskStatusHandle {
+    limiter: Limiter,
+    task_manager: TaskManager,
+    task_ids: Vec<Id>
+}
+
+impl BatchedTaskStatusHandle {
+    pub fn poll(&self) -> Vec<Option<TaskStatus>> {
+        self.task_manager.get_statuses(self.task_ids.clone())
+    }
 }
 
 #[derive(Error, Debug)]
-pub enum JobError {
+pub enum TaskError {
     #[error("aborted")]
     Aborted,
     #[error("")]
@@ -178,59 +289,7 @@ pub enum JobError {
     },
 }
 
-impl Future for JobHandle {
-    type Output = Result<(), JobError>;
-
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        
-        if self.aborted.load(Ordering::Relaxed) { return Poll::Ready(Err(JobError::Aborted)) }
-
-        match self.jh {
-            DownloadTaskJoinHandle::Signle(ref mut jh) => {
-                jh.poll_unpin(cx).map(|output| {
-                    match output {
-                        Ok(task_result) => {
-                            match task_result {
-                                Ok(_) => { return Ok(()) }
-                                Err(download_error) => { return Err(JobError::Failed { error: download_error }) }
-                            }
-                        },
-                        Err(join_error) => {
-                            if join_error.is_cancelled() { return Err(JobError::Aborted) }
-                            else if join_error.is_panic() { panic!("light-engine worker thread panicked when executing download task id {}", join_error.id()) }
-                        },
-                    }
-                    Ok(())
-                })
-            },
-            DownloadTaskJoinHandle::Batched(ref mut jhs) => {
-                let mut polls: Vec<Poll<Result<DownloadTaskResult, task::JoinError>>> = Vec::new();
-
-                for jh in jhs.iter_mut() {
-                    let poll = jh.poll_unpin(cx);
-                    if let Ready(Err(ref error)) = poll {
-                        if error.is_cancelled() { return Poll::Ready(Err(JobError::Aborted)) }
-                        else if error.is_panic() { panic!("light-engine worker thread panicked when executing download task id {}", error.id()) }
-                    }
-                    else if let Ready(Ok(Err(error))) = poll {
-                        return Poll::Ready(Err(JobError::Failed { error }))
-                    };
-                    polls.push(poll);
-                }
-                
-                for poll in polls {
-                    match poll {
-                        Poll::Pending => return Poll::Pending,
-                        _ => continue
-                    }
-                };
-                Poll::Ready(Ok(()))
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DownloadRequest {
     pub path: PathBuf,
     pub url: String,
@@ -242,11 +301,11 @@ impl DownloadRequest {
         return DownloadRequest { path, url, retries }
     }
 
-    pub fn into_task(self, task_manager: TaskManager, watcher: Watcher, rt: Arc<Runtime>, client: Client) -> DownloadTask {
+    pub fn into_task(self, task_manager: TaskManager, limiter: Limiter, rt: Arc<Runtime>, client: Client) -> DownloadTask {
         return DownloadTask {
             request: self,
             task_manager,
-            watcher,
+            limiter,
             rt,
             client,
         }

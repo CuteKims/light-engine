@@ -2,24 +2,24 @@ use std::sync::Arc;
 use reqwest::{header, Client};
 use thiserror::Error;
 use tokio::{fs::File, io::AsyncWriteExt, runtime::Runtime, task};
-use crate::{engine::{DownloadRequest, TaskStatus, TaskStatusType}, manager::TaskManager, watcher::Watcher};
+use crate::{engine::{DownloadRequest, TaskStatus, TaskStatusType}, manager::TaskManager, limiter::Limiter};
 
 // 包含了全部下载逻辑的下载任务结构体。拥有执行任务需要的所有上下文。
 pub struct DownloadTask {
     pub request: DownloadRequest,
     pub task_manager: TaskManager,
-    pub watcher: Watcher,
+    pub limiter: Limiter,
     pub rt: Arc<Runtime>,
     pub client: Client,
 }
 
 impl DownloadTask {
     pub fn exec(self) -> task::JoinHandle<Result<(), DownloadError>>{
-        self.rt.spawn(exec(self.request, self.client, self.watcher, self.task_manager))
+        self.rt.spawn(exec(self.request, self.client, self.limiter, self.task_manager))
     }
 }
 
-async fn exec(request: DownloadRequest, client: Client, watcher: Watcher, task_manager: TaskManager) -> Result<(), DownloadError> {
+async fn exec(request: DownloadRequest, client: Client, limiter: Limiter, task_manager: TaskManager) -> Result<(), DownloadError> {
     let task_id = task::id();
     let mut result: Result<(), DownloadError> = Ok(());
     for retries in 0..request.retries + 1 {
@@ -37,7 +37,7 @@ async fn exec(request: DownloadRequest, client: Client, watcher: Watcher, task_m
                     DownloadError::Network(error)
                 })?;
             if head_resp.status().is_success() == false {
-                return Err(DownloadError::Service)
+                return Err(DownloadError::Server)
             }
             let content_length = head_resp
                 .headers()
@@ -49,7 +49,7 @@ async fn exec(request: DownloadRequest, client: Client, watcher: Watcher, task_m
                         .parse::<usize>()
                         .unwrap()
                 });
-            // 这里为什么要请求两次来获取content length？因为这个是用来以后实现分段异步下载用的。我还没开始写而已。
+            // 这里为什么要多请求一次来获取content length？因为这个是用来以后实现分段异步下载用的。我还没开始写而已。
             // 你觉得这样已经够快了，没必要分段？我不要你觉得，我要我觉得。
             let mut full_resp = client.get(request.url.clone()).send().await.map_err(|error| {
                 DownloadError::Network(error)
@@ -59,7 +59,7 @@ async fn exec(request: DownloadRequest, client: Client, watcher: Watcher, task_m
             while let Ok(Some(chunk)) = full_resp.chunk().await.map_err(|error| { DownloadError::Network(error) }) {
                 // 等待获取下载许可。用于限流。
                 // 传入的chunk length会被同时用于流量统计。这是暂时的。
-                watcher.acquire_permission(chunk.len()).await;
+                limiter.acquire_stream(chunk.len()).await;
                 file.write(&chunk).await.map_err(|error| {
                     DownloadError::IO(error)
                 })?;
@@ -89,8 +89,8 @@ pub enum DownloadError {
     IO(std::io::Error),
     #[error("network error")]
     Network(reqwest::Error),
-    #[error("service error")]
-    Service,
+    #[error("server error")]
+    Server,
     #[error("parsing error")]
     InvalidContent
 }
