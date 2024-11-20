@@ -1,5 +1,4 @@
-use std::{cmp::min, num::NonZeroUsize, sync::{atomic::{AtomicUsize, Ordering}, Arc}, thread, time::Duration};
-
+use std::{cmp::min, num::NonZeroUsize, sync::Arc, thread, time::Duration};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 pub struct Builder {
@@ -14,8 +13,8 @@ impl Builder {
     pub fn max_concurrency(self, val: NonZeroUsize) -> Self {
         Self { max_concurrency: Some(usize::from(val)), max_rate: self.max_rate }
     }
-    pub fn max_rate(self, val: NonZeroUsize) -> Self {
-        Self { max_concurrency: self.max_concurrency, max_rate: Some(usize::from(val)) }
+    pub fn max_rate(self, bytes_per_second: NonZeroUsize) -> Self {
+        Self { max_concurrency: self.max_concurrency, max_rate: Some(usize::from(bytes_per_second)) }
     }
     pub fn build(self) -> Limiter {
         Limiter {

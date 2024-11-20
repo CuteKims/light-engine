@@ -25,7 +25,13 @@ impl TaskManager {
     }
 
     pub fn get_status(&self, task_id: Id) -> Option<TaskStatus> {
-        self.tasks.get(&task_id).as_deref().cloned()
+        let status = self.tasks.get(&task_id).as_deref().cloned();
+        if let Some(ref status) = status {
+            if status.status_type == TaskStatusType::Finished || status.status_type == TaskStatusType::Failed {
+                self.tasks.remove(&task_id);
+            }
+        };
+        status
     }
 
     pub fn get_statuses(&self, task_ids: Vec<Id>) -> Vec<Option<TaskStatus>> {
@@ -40,7 +46,7 @@ impl TaskManager {
             .collect()
     }
 
-    pub fn report_status(&self, task_id: Id, new_status: TaskStatus) {
+    pub fn update_status(&self, task_id: Id, new_status: TaskStatus) {
         if let Some(mut status) = self.tasks.get_mut(&task_id) {
             *status = new_status
         }
