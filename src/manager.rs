@@ -16,18 +16,21 @@ impl TaskManager {
     }
 
     pub fn new_task(&self, task_id: Id) {
-        self.tasks.insert(task_id, TaskStatus {retries: 0, status_type: TaskStatusType::Pending});
+        self.tasks.insert(task_id, TaskStatus {retries: 0, status_type: TaskStatusType::Queuing});
     }
     pub fn new_tasks(&self, task_ids: Vec<Id>) {
         task_ids.into_iter().for_each(|task_id| {
-            self.tasks.insert(task_id, TaskStatus {retries: 0, status_type: TaskStatusType::Pending});
+            self.tasks.insert(task_id, TaskStatus {retries: 0, status_type: TaskStatusType::Queuing});
         });
     }
 
     pub fn get_status(&self, task_id: Id) -> Option<TaskStatus> {
-        let status = self.tasks.get(&task_id).as_deref().cloned();
+        let status = self.tasks
+            .get(&task_id)
+            .as_deref()
+            .cloned();
         if let Some(ref status) = status {
-            if status.status_type == TaskStatusType::Finished || status.status_type == TaskStatusType::Failed {
+            if status.status_type.is_finished() {
                 self.tasks.remove(&task_id);
             }
         };
@@ -38,10 +41,8 @@ impl TaskManager {
         task_ids
             .into_iter()
             .map(|task_id| {
-                self.tasks
-                    .get(&task_id)
-                    .as_deref()
-                    .cloned()
+                self.get_status(task_id)
+                    
             })
             .collect()
     }
