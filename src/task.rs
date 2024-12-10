@@ -19,12 +19,12 @@ impl DownloadTask {
                 _ = self.cancellation_token.cancelled() => {
                     Err(
                         TaskError {
-                            kind: TaskErrorKind::Aborted,
+                            kind: TaskErrorKind::Cancelled,
                             origional_request: self.request
                         }
                     )
                 }
-                result = exec(self.request, self.task_manager, self.limiter, self.client) => {
+                result = exec(self.request.clone(), self.task_manager, self.limiter, self.client) => {
                     result
                 }
             }
@@ -274,13 +274,13 @@ fn get_network_error_kind(err: reqwest::Error) -> NetworkErrorKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskError {
-    kind: TaskErrorKind,
-    origional_request: DownloadRequest
+    pub kind: TaskErrorKind,
+    pub origional_request: DownloadRequest
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskErrorKind {
-    Aborted,
+    Cancelled,
     IO(std::io::ErrorKind),
     Network(NetworkErrorKind),
     TimedOut,

@@ -3,7 +3,7 @@ use light_engine::{engine::{self, DownloadRequest}, limiter};
 use tokio::{runtime::Runtime, time::sleep};
 
 fn main() {
-    let path1 = Path::new("examples\\file.exe").to_path_buf();
+    let path1 = Path::new("file.exe").to_path_buf();
     let url = "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.16_241023_x64_01.exe".to_string();
 
     let limiter = limiter::Builder::new()
@@ -27,19 +27,17 @@ fn main() {
     rt.block_on(async move {
         let handle = engine.send_batched_requests(vec![request.clone(), request]);
         let status_handle = handle.status_handle();
-        // tokio::pin!(handle);
-        // loop {
-        //     tokio::select! {
-        //         _ = sleep(Duration::from_millis(1000)) => {
-        //             println!("{:#?}", status_handle.poll());
-        //         }
-        //         result = &mut handle => {
-        //             println!("{:#?}", result);
-        //             break;
-        //         }
-        //     }
-        // }
-        let result = handle.await;
-        println!("{:#?}", result);
+        tokio::pin!(handle);
+        loop {
+            tokio::select! {
+                _ = sleep(Duration::from_millis(1000)) => {
+                    println!("{:#?}", status_handle.poll());
+                }
+                result = &mut handle => {
+                    println!("{:#?}", result);
+                    break;
+                }
+            }
+        }
     })
 }
