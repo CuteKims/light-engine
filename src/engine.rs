@@ -85,7 +85,7 @@ pub struct DownloadEngine {
 impl DownloadEngine {
     // DownloadRequest在这里获取上下文并封装成为DownloadTask。
     pub fn send_request(&self, request: DownloadRequest) -> TaskHandle {
-        let jh: JoinHandle<Result<(), ErrorKind>> = request
+        let jh: JoinHandle<Result<(), TaskError>> = request
             .clone()
             .into_task(
                 self.task_manager.clone(),
@@ -350,7 +350,7 @@ impl BatchedStatusHandle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DownloadRequest {
     pub path: PathBuf,
     pub url: String,
@@ -365,7 +365,7 @@ impl DownloadRequest {
         retries: NonZeroUsize,
         timeout: Duration
     ) -> Self {
-        return DownloadRequest {
+        DownloadRequest {
             path,
             url,
             retries,
@@ -379,7 +379,7 @@ impl DownloadRequest {
         limiter: Limiter,
         client: Client,
     ) -> DownloadTask {
-        return DownloadTask {
+        DownloadTask {
             request: self,
             task_manager,
             limiter,
